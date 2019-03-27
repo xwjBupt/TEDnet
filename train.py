@@ -78,13 +78,13 @@ parser.add_argument('-test_gt', default = '/media/xwj/Data/DataSet/shanghai_tech
 parser.add_argument('-resume',  default=True,type=str,
                     help='path to the pretrained model')
 
-parser.add_argument('-multi-gpu',type=bool,default=False,
+parser.add_argument('-multi-gpu',type=bool,default=True,
                     help='wheather to use multi gpu')
 
-parser.add_argument('-lr', type=float,default=0.000000001,
+parser.add_argument('-lr', type=float,default=0.0000001,
                     help='learning rate')
 
-parser.add_argument('-method', type=str,default='Triangle-crop-fix-FA',
+parser.add_argument('-method', type=str,default='Triangle-crop-fix',
                     help='description of your method')
 
 parser.add_argument('-epochs',type=int,default=1000,
@@ -100,7 +100,6 @@ parser.add_argument('-start_epoch',type=int,default=0)
 
 
 if __name__ == '__main__':
-    # torch.backends.cudnn.benchmark = True
     global args
     args = parser.parse_args()
 
@@ -167,12 +166,12 @@ if __name__ == '__main__':
     LOSS = Myloss()
     logger.info(args.method)
 
-    train_data = SDNSHTech(imdir=args.train_im, gtdir=args.train_gt, transform=0.5, train=True, test=False, raw=True,
+    train_data = SDNSHTech(imdir=args.train_im, gtdir=args.train_gt, transform=0.5, train=True, test=False, raw=False,
                            num_cut=4)
     val_data = SDNSHTech(imdir=args.test_im, gtdir=args.test_gt, train=False, test=True)
 
-    train_loader = DataLoader(train_data, batch_size=1, shuffle=True, num_workers=8,pin_memory=True)
-    val_loader = DataLoader(val_data, batch_size=1, shuffle=False, num_workers=0,pin_memory=True)
+    train_loader = DataLoader(train_data, batch_size=1, shuffle=True, num_workers=8)
+    val_loader = DataLoader(val_data, batch_size=1, shuffle=False, num_workers=0)
 
     for epoch in range(args.start_epoch,args.epochs):
         epoch_start = time.time()
@@ -195,10 +194,10 @@ if __name__ == '__main__':
 
         for index,(img,den) in tqdm(enumerate(train_loader)):
 
-            # img = img[0]
-            # den = den[0]
-            img = img.cuda(async=True)
-            den = den.cuda(async=True)
+            img = img[0]
+            den = den[0]
+            img = img.cuda()
+            den = den.cuda()
 
             es_den = net(img)
             Loss = LOSS(es_den, den)
@@ -213,7 +212,6 @@ if __name__ == '__main__':
             gtcount.append(gt_count)
             # if index %50 ==0:
             #     cprint('MAE LOSS:%.8f - SSIM LOSS:%.8f' % (LOSS.loss_E, LOSS.loss_C), color='yellow')
-        torch.cuda.empty_cache()
         duration = time.time()-train_start
         trainfps = index/duration
         trainmae, trainmse = eva_model(escount, gtcount)
@@ -231,83 +229,7 @@ if __name__ == '__main__':
         ##############
         ####val start####
 
-        valstart = time.time()
-        net.eval()
-        with torch.no_grad():
 
-            for index,(vimg ,vden) in tqdm(enumerate(val_loader)):
-                vimg = vimg.cuda(async=True)
-                vden = vden.cuda(async=True)
-                val_es_den = net(vimg)
-                val_loss = LOSS(val_es_den,vden)
-                valloss.update(val_loss.item(), vimg.shape[0])
-
-                ves_count = np.sum(val_es_den[0][0].cpu().detach().numpy())
-                vgt_count = np.sum(vden[0][0].cpu().detach().numpy())
-
-                escount.append(ves_count)
-                gtcount.append(vgt_count)
-
-
-
-                if index % 60 ==0 and epoch % args.display == 0 :
-                    cprint('MAE LOSS:%.8f - SSIM LOSS:%.8f'%(LOSS.loss_E,LOSS.loss_C),color='yellow')
-
-                    plt.subplot(131)
-                    plt.title('raw image')
-                    plt.imshow(vimg[0][0].cpu().detach().numpy())
-
-                    plt.subplot(132)
-                    plt.title('gtcount:%.2f'%vgt_count)
-                    plt.imshow(vden[0][0].cpu().detach().numpy())
-
-
-                    plt.subplot(133)
-                    plt.title('escount:%.2f'%ves_count)
-                    plt.imshow(val_es_den[0][0].cpu().detach().numpy())
-                    plt.savefig(saveimg+'/epoch{}-step{}.jpg'.format(epoch, index))
-
-
-                    # plt.show()
-
-            duration = time.time()-valstart
-            valfps = index/duration
-            valmae, valmse = eva_model(escount, gtcount)
-            scheduler.step(valmae)
-            epoch_duration = time.time() - epoch_start
-            info = 'valloss:{%.8f} @ valmae:{%.3f} @ valmse:{%.3f} @ valfps{%.3f}' % (
-                valloss.avg ,
-                valmae,
-                valmse,
-                valfps
-            )
-            logger.info(info)
-
-            ###save model
-
-            losssave = {
-                'epoch': epoch + 1,
-                'state_dict': net.state_dict() if not args.multi_gpu else net.module.state_dict(),
-                'best_loss': valloss.avg,
-                'best_mae':args.best_mae,
-                'best_mse':args.best_mse,
-                'lr': get_learning_rate(optimizer)
-            }
-
-            if args.best_loss > valloss.avg:
-                args.best_loss = valloss.avg
-                torch.save(losssave, savemodel + '/best_loss_cut.tar')
-
-
-
-            if args.best_mae > valmae:
-                args.best_mae = valmae
-                torch.save(losssave, savemodel + '/best_loss_mae.tar')
-
-
-            if args.best_mse > valmse:
-                args.best_mse = valmse
-                torch.save(losssave, savemodel + '/best_loss_mse.tar')
 
 
 
@@ -317,13 +239,10 @@ if __name__ == '__main__':
 
         logger.info('epoch %d done,cost time %.3f sec\n'%(epoch,epoch_duration))
 
-        writer.add_scalars('data/loss', {
-                'trainloss': trainloss.avg,
-                'valloss': valloss.avg}, epoch)
+        writer.add_scalar('data/loss', {
+                'valloss': valloss.avg, epoch})
 
         writer.add_scalars(args.method, {
-                'valmse': valmse,
-                'valmae': valmae,
                 'trainmse': trainmse,
                 'trainmae': trainmae
             }, epoch)
